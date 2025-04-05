@@ -4,6 +4,7 @@
 import os
 import sys
 import signal
+import subprocess
 
 from multiprocessing import Pool
 from itertools import takewhile, repeat
@@ -48,42 +49,42 @@ def raw_in_count(filename):
 
 def worker(filepath, target_list):
     """
-    Searches for every email from target_list in every line of filepath.
-    Attempts to decode line using cp437. If it fails, catch and use raw data
+    Searches for every email from target_list in every line of filepath using ripgrep.
     """
+    found_list = []
     try:
-        with open(filepath, "rb") as fp:
-            found_list = []
-            size = os.stat(filepath).st_size
-            c.info_news(
-                "Worker [{PID}] is searching for targets in {filepath} ({size:,.0f} MB)".format(
-                    PID=os.getpid(), filepath=filepath, size=size / float(1 << 20))
+        for t in target_list:
+            try:
+                result = subprocess.run(
+                    ["rg", "-n", "-H", "--color", "never", "--text", t, filepath],
+                    capture_output=True,
+                    text=True,
+                    check=True
                 )
-            for cnt, line in enumerate(fp):
-                for t in target_list:
-                    if t in str(line, "cp437"):
-                        try:
-                            decoded = str(line, "cp437")
-                            found_list.append(
-                                local_breach_target(t, filepath, cnt, decoded)
-                            )
-                            c.good_news(
-                                f"Found occurrence [{filepath}] Line {cnt}: {decoded}"
-                            )
-                        except Exception as e:
-                            c.bad_news(
-                                f"Got a decoding error line {cnt} - file: {filepath}"
-                            )
-                            c.good_news(
-                                f"Found occurrence [{filepath}] Line {cnt}: {line}"
-                            )
-                            found_list.append(
-                                local_breach_target(t, filepath, cnt, str(line))
-                            )
-        return found_list
+                for line in result.stdout.splitlines():
+                    try:
+                        # Split the line into filename, line number, and content
+                        parts = line.split(":", 2)
+                        if len(parts) < 3:
+                            raise ValueError(f"Unexpected format: {line}")
+                        _, line_number, content = parts
+                        line_number = int(line_number)
+                        found_list.append(
+                            local_breach_target(t, filepath, line_number, content)
+                        )
+                        c.good_news(
+                            f"Found occurrence [{filepath}] Line {line_number}: {content}"
+                        )
+                    except ValueError as ve:
+                        c.bad_news(f"Error parsing line: {line} - {ve}")
+            except subprocess.CalledProcessError:
+                # No matches found, continue to the next target
+                c.info_news(f"No matches found for {t} in {filepath}")
+                continue
     except Exception as e:
-        c.bad_news("Something went wrong with worker")
+        c.bad_news(f"Something went wrong with worker: {e}")
         print(e)
+    return found_list
 
 
 def local_search(files_to_parse, target_list):
